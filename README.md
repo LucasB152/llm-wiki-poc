@@ -10,7 +10,7 @@ You never write the wiki yourself:
 
 The AI can be **Google Gemini**, **OpenAI** or **Anthropic**: you bring your own API key and choose the model.
 
-> **Status:** proof of concept. There is no authentication and no frontend yet: the project is used through its HTTP API.
+> **Status:** personal proof of concept, **not maintained**. I built it to validate the approach before the development of a team project. There is no authentication and no frontend: the project is used through its HTTP API.
 
 ## Repository layout
 
@@ -89,7 +89,24 @@ curl -X POST http://localhost:3000/wiki/query \
   -d '{"provider": "GEMINI", "model": "gemini-3.5-flash-lite", "question": "Quel est le rôle de la couche physique ?"}'
 ```
 
-The response contains the answer, the wiki pages used and a `conversationId`. Send that `conversationId` with your next question to continue the conversation.
+The response contains the answer, the wiki pages the AI read to write it, and a `conversationId` (abridged example):
+
+```json
+{
+  "conversationId": "c1f4…",
+  "question": "Quel est le rôle de la couche physique ?",
+  "provider": "GEMINI",
+  "model": "gemini-3.5-flash-lite",
+  "answer": "La couche physique transmet les bits bruts sur le support (câble, fibre, ondes radio)… [couche-physique.md]",
+  "sources": {
+    "pages": ["index.md", "couche-physique.md"],
+    "raw": []
+  },
+  "steps": 3
+}
+```
+
+Send the `conversationId` with your next question to continue the conversation.
 
 Other useful routes:
 
