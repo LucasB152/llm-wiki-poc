@@ -1,5 +1,7 @@
 # LLM Wiki POC
 
+This project implements the **LLM Wiki** pattern described by Andrej Karpathy in his [LLM Wiki idea file](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): instead of searching the raw documents at every question like classic RAG, the LLM builds a persistent wiki once and keeps it up to date.
+
 An AI builds and maintains a **wiki** from your own documents, then answers questions using **only** that wiki.
 
 You never write the wiki yourself:
