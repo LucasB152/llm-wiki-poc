@@ -16,4 +16,3 @@ export const SCHEMA_FILE = 'AGENTS.md';
 
 /** Special wiki pages, created on startup if missing. */
 export const INDEX_FILE = 'index.md';
-export const LOG_FILE = 'log.md';

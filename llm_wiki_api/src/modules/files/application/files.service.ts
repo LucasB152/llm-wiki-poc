@@ -6,172 +6,128 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import {
-  appendFile,
-  mkdir,
-  readdir,
-  readFile,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import {
   FILE_NAME_PATTERN,
   INDEX_FILE,
-  LOG_FILE,
   SCHEMA_FILE,
   WikiArea,
 } from '../domain/files.constants';
-import {
-  DEFAULT_INDEX,
-  DEFAULT_LOG,
-  DEFAULT_SCHEMA,
-} from '../domain/wiki-templates';
+import { DEFAULT_INDEX, DEFAULT_SCHEMA } from '../domain/wiki-templates';
+import { FileRepository } from '../infrastructure/file.repository';
 
 /**
- * Access to the LLM Wiki folder:
+ * Access to the LLM Wiki files, stored in the database:
  *
- *   <FILES_DIR>/
- *     AGENTS.md     wiki schema
- *     raw/          raw sources (immutable)
- *     wiki/         generated pages (including index.md and log.md)
+ *   schema  AGENTS.md (wiki schema)
+ *   raw     raw sources (written by the user, never by the AI)
+ *   wiki    generated pages (including index.md)
  */
 @Injectable()
 export class FilesService implements OnModuleInit {
-  private readonly rootDir = resolve(process.env.FILES_DIR ?? 'data');
+  constructor(private readonly files: FileRepository) {}
 
-  /** Creates the folder tree and default files if they are missing. */
+  /** Creates the default files if they are missing. */
   async onModuleInit() {
-    for (const area of Object.values(WikiArea)) {
-      await mkdir(this.dirOf(area), { recursive: true });
-    }
-    await this.writeIfMissing(join(this.rootDir, SCHEMA_FILE), DEFAULT_SCHEMA);
-    await this.writeIfMissing(
-      this.pathOf(WikiArea.WIKI, INDEX_FILE),
-      DEFAULT_INDEX,
-    );
-    await this.writeIfMissing(
-      this.pathOf(WikiArea.WIKI, LOG_FILE),
-      DEFAULT_LOG,
-    );
+    await this.files.createMissing([
+      { area: 'schema', name: SCHEMA_FILE, content: DEFAULT_SCHEMA },
+      { area: WikiArea.WIKI, name: INDEX_FILE, content: DEFAULT_INDEX },
+    ]);
   }
 
   /** Lists the file names of an area. */
-  async findAll(area: WikiArea): Promise<string[]> {
-    const entries = await readdir(this.dirOf(area), { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && FILE_NAME_PATTERN.test(entry.name))
-      .map((entry) => entry.name)
-      .sort();
+  findAll(area: WikiArea): Promise<string[]> {
+    return this.files.list(area);
+  }
+
+  /** Lists the files of an area with their last modification date. */
+  findAllWithDates(area: WikiArea) {
+    return this.files.listWithDates(area);
   }
 
   async findOne(area: WikiArea, name: string) {
-    const content = await this.readOrNotFound(this.pathOf(area, name), name);
+    this.checkName(name);
+    const content = await this.files.find(area, name);
+    if (content === null)
+      throw new NotFoundException(`File "${name}" not found`);
     return { area, name, content };
   }
 
-  /** Adds a raw source (409 if it already exists: raw/ is immutable). */
+  /** Adds a raw source (409 if it already exists: edits go through updateRaw). */
   async addRaw(name: string, data: Buffer) {
-    try {
-      await writeFile(this.pathOf(WikiArea.RAW, name), data, { flag: 'wx' });
-    } catch (error) {
-      if (this.hasCode(error, 'EEXIST')) {
-        throw new ConflictException(`Raw source "${name}" already exists`);
-      }
-      throw error;
+    this.checkName(name);
+    if (!(await this.files.create(WikiArea.RAW, name, this.decodeText(data)))) {
+      throw new ConflictException(`Raw source "${name}" already exists`);
     }
     return { area: WikiArea.RAW, name, size: data.length };
   }
 
+  /** Replaces the content of an existing raw source (404 if it does not exist). */
+  async updateRaw(name: string, content: string) {
+    this.checkName(name);
+    if (!(await this.files.update(WikiArea.RAW, name, content))) {
+      throw new NotFoundException(`File "${WikiArea.RAW}/${name}" not found`);
+    }
+    return { area: WikiArea.RAW, name };
+  }
+
   /** Creates or replaces a wiki page. */
   async writeWikiPage(name: string, content: string) {
-    const path = this.pathOf(WikiArea.WIKI, name);
-    let created = true;
-    try {
-      await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
-    } catch (error) {
-      if (!this.hasCode(error, 'EEXIST')) throw error;
-      await writeFile(path, content, 'utf8');
-      created = false;
+    this.checkName(name);
+    let created = false;
+    if (!(await this.files.update(WikiArea.WIKI, name, content))) {
+      created = await this.files.create(WikiArea.WIKI, name, content);
+      // Created by a concurrent call in the meantime: overwrite it.
+      if (!created) await this.files.update(WikiArea.WIKI, name, content);
     }
     return { area: WikiArea.WIKI, name, created };
   }
 
-  /** Appends an entry to wiki/log.md (append-only log). */
-  async appendLog(entry: string) {
-    await appendFile(
-      this.pathOf(WikiArea.WIKI, LOG_FILE),
-      `\n${entry.trim()}\n`,
-      'utf8',
-    );
-  }
-
   /** Deletes a file from an area (404 if it does not exist). */
   async remove(area: WikiArea, name: string) {
-    try {
-      await unlink(this.pathOf(area, name));
-    } catch (error) {
-      if (
-        this.hasCode(error, 'ENOENT') ||
-        this.hasCode(error, 'EISDIR') ||
-        this.hasCode(error, 'EPERM')
-      ) {
-        throw new NotFoundException(`File "${area}/${name}" not found`);
-      }
-      throw error;
+    this.checkName(name);
+    if (!(await this.files.delete(area, name))) {
+      throw new NotFoundException(`File "${area}/${name}" not found`);
     }
     return { area, name, deleted: true };
   }
 
   async readSchema() {
-    const content = await this.readOrNotFound(
-      join(this.rootDir, SCHEMA_FILE),
-      SCHEMA_FILE,
-    );
-    return { name: SCHEMA_FILE, content };
+    const content = await this.files.find('schema', SCHEMA_FILE);
+    return { name: SCHEMA_FILE, content: content ?? DEFAULT_SCHEMA };
   }
 
   async writeSchema(content: string) {
-    await writeFile(join(this.rootDir, SCHEMA_FILE), content, 'utf8');
+    if (!(await this.files.update('schema', SCHEMA_FILE, content))) {
+      await this.files.create('schema', SCHEMA_FILE, content);
+    }
     return { name: SCHEMA_FILE, content };
   }
 
-  private dirOf(area: WikiArea): string {
-    return join(this.rootDir, area);
+  /**
+   * Uploaded sources are stored as text: rejects anything that is not a
+   * UTF-8 text file (PostgreSQL TEXT columns cannot hold binary data).
+   */
+  private decodeText(data: Buffer): string {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let text: string;
+    try {
+      text = decoder.decode(data);
+    } catch {
+      throw new BadRequestException(
+        'Only Markdown or text file can be uploaded.',
+      );
+    }
+    if (text.includes('\0')) {
+      throw new BadRequestException(
+        'Only Markdown or text file can be uploaded.',
+      );
+    }
+    return text;
   }
 
-  /** Resolves the path, rejecting any name that would escape the area. */
-  private pathOf(area: WikiArea, name: string): string {
+  /** Same names as before (no "/", no ".."), even though files are no longer on disk. */
+  private checkName(name: string) {
     if (!FILE_NAME_PATTERN.test(name)) {
       throw new BadRequestException(`Invalid file name "${name}"`);
     }
-    return join(this.dirOf(area), name);
-  }
-
-  private async readOrNotFound(path: string, label: string): Promise<string> {
-    try {
-      return await readFile(path, 'utf8');
-    } catch (error) {
-      if (this.hasCode(error, 'ENOENT') || this.hasCode(error, 'EISDIR')) {
-        throw new NotFoundException(`File "${label}" not found`);
-      }
-      throw error;
-    }
-  }
-
-  private async writeIfMissing(path: string, content: string) {
-    try {
-      await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
-    } catch (error) {
-      if (!this.hasCode(error, 'EEXIST')) throw error;
-    }
-  }
-
-  /** No `instanceof Error`: unreliable across realms (e.g. under Jest). */
-  private hasCode(error: unknown, code: string): boolean {
-    return (
-      typeof error === 'object' &&
-      error !== null &&
-      (error as NodeJS.ErrnoException).code === code
-    );
   }
 }

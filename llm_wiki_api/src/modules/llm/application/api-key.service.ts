@@ -33,6 +33,10 @@ const KEY_FORMATS: Record<AiProvider, { pattern: RegExp; hint: string }> = {
     pattern: /^sk-ant-[A-Za-z0-9_-]{20,}$/,
     hint: 'an Anthropic key starts with "sk-ant-"',
   },
+  [AiProvider.GROQ]: {
+    pattern: /^gsk_[A-Za-z0-9]{20,}$/,
+    hint: 'a Groq key starts with "gsk_"',
+  },
 };
 
 /**
@@ -73,10 +77,6 @@ export class ApiKeyService {
       provider,
       key: this.mask(key),
     }));
-  }
-
-  async findOne(provider: AiProvider) {
-    return { provider, key: this.mask(await this.getKey(provider)) };
   }
 
   async remove(provider: AiProvider) {

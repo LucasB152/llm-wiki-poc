@@ -24,19 +24,3 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
     ports:
       - "3000:3000"
-
-  # One-shot: saves the API key and ingests some sample sources, then stops.
-  seed:
-    build: ./llm_wiki_api
-    entrypoint: ["./docker/seed.sh"]
-    depends_on:
-      api:
-        condition: service_healthy
-    environment:
-      API_URL: http://api:3000
-      # Read from the .env next to this file (Compose does not pass it on by itself)
-      LLM_PROVIDER: ${LLM_PROVIDER:-ANTHROPIC}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      SEED_SOURCES: ${SEED_SOURCES:-00-vue-ensemble-modeles-en-couches.md 01_couche_physique.md 02-couche-liaison-de-donnees.md}
-    restart: "no"

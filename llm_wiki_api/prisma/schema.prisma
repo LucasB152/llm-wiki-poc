@@ -72,3 +72,58 @@ model ApiKey {
 
   @@map("api_key")
 }
+
+/// raw: sources (written by the user) · wiki: pages (written by the AI) · schema: AGENTS.md
+enum FileArea {
+  raw
+  wiki
+  schema
+
+  @@map("file_area")
+}
+
+/// Text files of the wiki (markdown), formerly stored in data/
+model WikiFile {
+  id         String   @id @default(uuid()) @db.Uuid
+  area       FileArea
+  name       String
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at")
+  modifiedAt DateTime @updatedAt @map("modified_at")
+
+  @@unique([area, name])
+  @@map("wiki_file")
+}
+
+enum LogOperation {
+  ingest
+  query
+
+  @@map("log_operation")
+}
+
+enum LogStatus {
+  success
+  failed
+
+  @@map("log_status")
+}
+
+/// Wiki journal (formerly wiki/log.md): one row per operation, append-only
+model LogEntry {
+  id           String       @id @default(uuid()) @db.Uuid
+  createdAt    DateTime     @default(now()) @map("created_at")
+  operation    LogOperation
+  /// Ingested source name, or the question asked
+  subject      String
+  pagesCreated String[]     @map("pages_created")
+  pagesUpdated String[]     @map("pages_updated")
+  pagesRead    String[]     @map("pages_read")
+  /// Rows written before this column existed were all successes
+  status       LogStatus    @default(success)
+  /// Error message when status = failed
+  error        String?
+
+  @@index([createdAt])
+  @@map("log_entry")
+}

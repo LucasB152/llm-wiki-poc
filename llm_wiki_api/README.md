@@ -4,27 +4,25 @@ NestJS API of the LLM Wiki project: it ingests raw sources into a wiki written b
 
 ## How it works
 
-### Wiki folder
+### Wiki files
 
-The wiki is a folder of files, set by `FILES_DIR`:
+The wiki files are stored in PostgreSQL (table `wiki_file`), in three areas:
 
 ```
-data/
-  AGENTS.md     wiki schema: conventions and workflows the AI must follow
-  raw/          raw sources, immutable: the AI reads them but never modifies them
-  wiki/         markdown pages written and maintained by the AI
-    index.md    catalog of every page, grouped by category
-    log.md      append-only log of every operation
+schema  AGENTS.md     wiki schema: conventions and workflows the AI must follow
+raw     sources       the AI reads them but never modifies them (the user can, through the API)
+wiki    pages         markdown pages written and maintained by the AI
+          index.md    catalog of every page, grouped by category
 ```
 
-`AGENTS.md`, `index.md` and `log.md` are created on startup if they are missing. `AGENTS.md` is given to the AI on every operation: edit it (through the API or by hand) to change how the AI organizes the wiki.
+`AGENTS.md` and `index.md` are created on startup if they are missing. `AGENTS.md` is given to the AI on every operation: edit it through the API to change how the AI organizes the wiki. Only UTF-8 text files can be uploaded as sources.
 
 ### AI operations
 
 Both operations use tool calling, through the Vercel AI SDK:
 
-1. **Ingest:** the AI gets `list_pages`, `read_page`, `read_source` and `write_page`. It reads the existing pages, creates or updates the relevant ones and rewrites `index.md`. The API then appends an entry to `log.md`. It cannot write to `raw/` or `log.md`.
-2. **Query:** the AI only gets **read-only** tools. It answers from the wiki pages only and cites them. The question and the answer are saved in a conversation, and the previous messages of that conversation are sent to the AI as context.
+1. **Ingest:** the AI gets `list_pages`, `read_page`, `read_source` and `write_page`. It reads the existing pages, creates or updates the relevant ones and rewrites `index.md`. The API then adds an entry to the wiki log (table `log_entry`). It cannot write to `raw/`.
+2. **Query:** the AI gets the read tools, plus `write_page`, used only when the teacher explicitly asks to change the wiki. It answers from the wiki pages only and cites them. The tools are for the AI only: it refuses to list the pages or the sources, or to show a page in full. The question and the answer are saved in a conversation, and the previous messages of that conversation are sent to the AI as context.
 
 ### Supported AI providers
 
@@ -33,6 +31,7 @@ Both operations use tool calling, through the Vercel AI SDK:
 | Google Gemini | `GEMINI` |
 | OpenAI | `OPENAI` |
 | Anthropic | `ANTHROPIC` |
+| Groq (open-weight models, free tier) | `GROQ` |
 
 You choose the provider **and** the model on every AI request. `GET /llm/models/:provider` lists the models available with your key.
 
@@ -40,7 +39,8 @@ You choose the provider **and** the model on every AI request. `GET /llm/models/
 
 | Data | Where |
 |---|---|
-| Wiki schema, raw sources, wiki pages | Files in `FILES_DIR` |
+| Wiki schema, raw sources, wiki pages | PostgreSQL, table `wiki_file` (one row per area + name) |
+| Wiki log (ingestions and questions) | PostgreSQL, table `log_entry`: one row per operation, written even when it fails |
 | Conversations and their messages | PostgreSQL, tables `conversation` and `message` |
 | AI providers and API keys | PostgreSQL, tables `provider` and `api_key`. Keys are **encrypted** (AES-256-GCM) with `API_KEY_ENCRYPTION_KEY` and never returned in plain text. |
 
@@ -50,7 +50,7 @@ The database is accessed with Prisma 7: schema in `prisma/schema.prisma`, migrat
 
 ### Docker
 
-The [`Dockerfile`](Dockerfile) builds the API image. When the container starts, [`docker/entrypoint.sh`](docker/entrypoint.sh) applies the pending migrations, then starts the API. [`docker/seed.sh`](docker/seed.sh) saves an API key and ingests sources through the API; Docker Compose runs it once at startup. See the [project README](../README.md#running-with-docker-compose) to run everything.
+The [`Dockerfile`](Dockerfile) builds the API image. When the container starts, [`docker/entrypoint.sh`](docker/entrypoint.sh) applies the pending migrations, then starts the API. See the [project README](../README.md#running-with-docker-compose) to run everything.
 
 ### Running locally
 
@@ -67,12 +67,11 @@ To browse the database: `npx prisma studio --config prisma7.config.ts`.
 
 ### Configuration
 
-Variables can be set in the environment or in the `.env` file at the root of the repository (see [`../.env.example`](../.env.example)). This file is loaded at startup, by the Prisma CLI and by the e2e tests, and never overrides variables that are already set. In Docker, the `api` service gets its variables from `docker-compose.yml` instead: `DATABASE_URL` points to the `db` container and `FILES_DIR` to `/app/data`.
+Variables can be set in the environment or in the `.env` file at the root of the repository (see [`../.env.example`](../.env.example)). This file is loaded at startup, by the Prisma CLI and by the e2e tests, and never overrides variables that are already set. In Docker, the `api` service gets its variables from `docker-compose.yml` instead: `DATABASE_URL` points to the `db` container.
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3000` | HTTP port |
-| `FILES_DIR` | `data` | Folder holding `AGENTS.md`, `raw/` and `wiki/` |
 | `DATABASE_URL` | *(required)* | PostgreSQL connection string, e.g. `postgresql://wiki:wiki@localhost:5432/llmwiki` |
 | `API_KEY_ENCRYPTION_KEY` | *(required)* | 32 random bytes in base64 (`openssl rand -base64 32`). Encrypts the API keys in the database. |
 | `CORS_ORIGINS` | *(all origins)* | Origins allowed to call the API, comma-separated, e.g. `http://localhost:5173` |
@@ -89,26 +88,24 @@ The API listens on `http://localhost:3000` by default. All bodies are JSON unles
 |---|---|---|
 | `POST` | `/llm/api-key` | Save or replace a provider's API key |
 | `GET` | `/llm/api-key` | List the stored keys (masked) |
-| `GET` | `/llm/api-key/:provider` | Get one provider's key (masked) |
 | `DELETE` | `/llm/api-key/:provider` | Delete a provider's key |
 | `GET` | `/llm/models/:provider` | List the models available with the stored key |
 | `POST` | `/wiki/ingest/:name` | Ingest a raw source into the wiki |
 | `POST` | `/wiki/query` | Ask a question, in a new or an existing conversation |
+| `GET` | `/wiki/sources` | Raw sources with their ingestion status |
+| `GET` | `/wiki/log` | Wiki log, most recent first |
 | `GET` | `/wiki/conversations` | List the conversations |
-| `GET` | `/wiki/conversations/:id` | Get a conversation with its messages |
 | `GET` | `/wiki/conversations/:id/messages` | Get the messages of a conversation |
 | `PATCH` | `/wiki/conversations/:id` | Rename a conversation |
 | `DELETE` | `/wiki/conversations/:id` | Delete a conversation and its messages |
 | `GET` | `/files/schema` | Read `AGENTS.md` |
 | `PUT` | `/files/schema` | Replace `AGENTS.md` |
-| `GET` | `/files/raw` | List the raw sources |
 | `GET` | `/files/raw/:name` | Read a raw source |
 | `POST` | `/files/raw/upload` | Upload a raw source |
+| `PUT` | `/files/raw/:name` | Edit a raw source |
 | `DELETE` | `/files/raw/:name` | Delete a raw source |
 | `GET` | `/files/wiki` | List the wiki pages |
 | `GET` | `/files/wiki/:name` | Read a wiki page |
-| `PUT` | `/files/wiki/:name` | Create or replace a wiki page by hand |
-| `DELETE` | `/files/wiki/:name` | Delete a wiki page |
 
 The sections below describe each group in detail.
 
@@ -118,7 +115,6 @@ The sections below describe each group in detail.
 |---|---|---|---|
 | `POST` | `/llm/api-key` | `{ "provider", "key" }` | Checks the key, then saves it encrypted, replacing the previous one. Returns it masked. |
 | `GET` | `/llm/api-key` | | Lists the configured providers, with masked keys. |
-| `GET` | `/llm/api-key/:provider` | | Returns one provider's masked key. |
 | `DELETE` | `/llm/api-key/:provider` | | Deletes a provider's key. |
 | `GET` | `/llm/models/:provider` | | Lists the models available with the stored key. |
 
@@ -126,7 +122,7 @@ There is one key per provider. Keys are kept in the database, so they survive re
 
 Before a key is saved, it goes through two checks:
 
-1. **Format:** the key must match the provider's usual prefix (`sk-...` for OpenAI, `sk-ant-...` for Anthropic). Google issues several key formats (`AIza...`, `AQ....`), so Gemini keys are only checked for length and allowed characters. Leading and trailing spaces are removed.
+1. **Format:** the key must match the provider's usual prefix (`sk-...` for OpenAI, `sk-ant-...` for Anthropic, `gsk_...` for Groq). Google issues several key formats (`AIza...`, `AQ....`), so Gemini keys are only checked for length and allowed characters. Leading and trailing spaces are removed.
 2. **Live check:** the API makes a real (free) call to the provider's model listing endpoint with that key.
 
 | Outcome | Response | Key stored? |
@@ -156,7 +152,7 @@ The `id` is the value to send in the `model` field of the wiki routes. `name` is
 | Method | URL | Body | Description |
 |---|---|---|---|
 | `POST` | `/wiki/ingest/:name` | `{ "provider", "model" }` | Ingests `raw/:name`: the AI creates / updates pages, rewrites `index.md`, and the API logs the operation. |
-| `POST` | `/wiki/query` | `{ "provider", "model", "question", "conversationId"? }` | Answers a question using only the wiki, and saves the question and the answer in a conversation. |
+| `POST` | `/wiki/query` | `{ "provider", "model", "question", "conversationId"? }` | Answers a question using only the wiki, and saves the question and the answer in a conversation. When the teacher explicitly asks ("save this answer to the wiki", "fix this page"), the AI can also write wiki pages: they are listed in `sources.created` / `sources.updated` and in the log. Never raw sources or `AGENTS.md`. The AI refuses to list the pages or the sources, or to show a page in full: that is the job of the Files page. |
 
 Example response of `POST /wiki/ingest/:name`:
 
@@ -203,47 +199,42 @@ Wiki operations that write are queued and run one at a time, so two concurrent i
 
 | Method | URL | Body | Description |
 |---|---|---|---|
+| `GET` | `/wiki/sources` | | Raw sources with `modifiedAt`, `lastIngestedAt` and `status`: `not_ingested`, `ingested`, `failed` (last attempt failed) or `outdated` (edited since the last successful ingestion). |
+| `GET` | `/wiki/log` | | Wiki log: every ingestion and question, failed ones included (`operation`, `subject`, `pagesCreated`, `pagesUpdated`, `pagesRead`, `status`: `success` or `failed`, `error`, `createdAt`), most recent first. |
 | `GET` | `/wiki/conversations` | | Lists the conversations, most recently active first, without their messages. |
-| `GET` | `/wiki/conversations/:id` | | Returns a conversation with all its messages, oldest first. |
-| `GET` | `/wiki/conversations/:id/messages` | | Returns only the messages of a conversation, oldest first. |
+| `GET` | `/wiki/conversations/:id/messages` | | Returns the messages of a conversation, oldest first. |
 | `PATCH` | `/wiki/conversations/:id` | `{ "title" }` | Renames a conversation. The title is required, at most 200 characters, and leading and trailing spaces are removed. |
 | `DELETE` | `/wiki/conversations/:id` | | Deletes a conversation and its messages. Returns `204`. |
 
 `:id` must be a UUID (`400` otherwise). An unknown id returns `404`. A conversation's `modifiedAt` is updated each time a message is added.
 
-Example response of `GET /wiki/conversations/:id`:
+Example response of `GET /wiki/conversations/:id/messages`:
 
 ```json
-{
-  "id": "3f1c2a9e-8b7d-4c1e-9f0a-2d5b6c7e8f90",
-  "title": "What does the network layer do?",
-  "createdAt": "2026-11-05T13:20:00.000Z",
-  "modifiedAt": "2026-11-05T13:21:30.000Z",
-  "messages": [
-    {
-      "id": "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
-      "conversationId": "3f1c2a9e-8b7d-4c1e-9f0a-2d5b6c7e8f90",
-      "providerId": null,
-      "model": null,
-      "createdAt": "2026-11-05T13:21:29.000Z",
-      "content": "What does the network layer do?",
-      "usage": null,
-      "role": "user",
-      "source": null
-    },
-    {
-      "id": "a4e5f6b7-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
-      "conversationId": "3f1c2a9e-8b7d-4c1e-9f0a-2d5b6c7e8f90",
-      "providerId": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
-      "model": "gemini-3.5-flash-lite",
-      "createdAt": "2026-11-05T13:21:30.000Z",
-      "content": "The network layer routes packets... ([Network layer](network-layer.md))",
-      "usage": { "inputTokens": 4000, "outputTokens": 500, "totalTokens": 4500 },
-      "role": "llm",
-      "source": { "pages": ["network-layer.md"], "raw": [] }
-    }
-  ]
-}
+[
+  {
+    "id": "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
+    "conversationId": "3f1c2a9e-8b7d-4c1e-9f0a-2d5b6c7e8f90",
+    "providerId": null,
+    "model": null,
+    "createdAt": "2026-11-05T13:21:29.000Z",
+    "content": "What does the network layer do?",
+    "usage": null,
+    "role": "user",
+    "source": null
+  },
+  {
+    "id": "a4e5f6b7-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+    "conversationId": "3f1c2a9e-8b7d-4c1e-9f0a-2d5b6c7e8f90",
+    "providerId": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+    "model": "gemini-3.5-flash-lite",
+    "createdAt": "2026-11-05T13:21:30.000Z",
+    "content": "The network layer routes packets... ([Network layer](network-layer.md))",
+    "usage": { "inputTokens": 4000, "outputTokens": 500, "totalTokens": 4500 },
+    "role": "llm",
+    "source": { "pages": ["network-layer.md"], "raw": [] }
+  }
+]
 ```
 
 `role` is `user` for a question and `llm` for an answer. `providerId`, `model`, `usage` and `source` are only filled in for answers.
@@ -254,14 +245,12 @@ Example response of `GET /wiki/conversations/:id`:
 |---|---|---|---|
 | `GET` | `/files/schema` | | Reads `AGENTS.md`. |
 | `PUT` | `/files/schema` | `{ "content" }` | Replaces `AGENTS.md`. |
-| `GET` | `/files/raw` | | Lists raw sources. |
 | `GET` | `/files/raw/:name` | | Reads a raw source. |
 | `POST` | `/files/raw/upload` | multipart: `file`, optional `name` | Uploads a raw source (max 5 MB). `409` if the name already exists. |
+| `PUT` | `/files/raw/:name` | `{ "content" }` | Replaces the content of an existing raw source. `404` if it does not exist (use the upload to add one). The wiki is not updated: ingest the source again. |
 | `DELETE` | `/files/raw/:name` | | Deletes a raw source. |
 | `GET` | `/files/wiki` | | Lists wiki pages. |
 | `GET` | `/files/wiki/:name` | | Reads a wiki page. |
-| `PUT` | `/files/wiki/:name` | `{ "content" }` | Creates or replaces a wiki page by hand. |
-| `DELETE` | `/files/wiki/:name` | | Deletes a wiki page. |
 
 Upload example:
 
@@ -292,12 +281,12 @@ src/
   modules/
     prisma/                PrismaService, shared by the whole app (global module)
     llm/                   AI providers: API keys (checked, encrypted, stored), models, conversation storage
-    files/                 read / write access to data/ (schema, raw/, wiki/)
+    files/                 wiki files (schema, sources, pages), stored in the database
     wiki/                  ingestion, questions and conversations: tool-calling loop, tools and prompts
 prisma/                    database schema and migrations
-docker/                    container entrypoint and seed script
+docker/                    container entrypoint
 test/                      API tests (e2e)
-data/                      the wiki folder (see "Wiki folder"); data/wiki/ is not versioned
+data/raw/                  sample sources, to upload from the web UI
 ```
 
 Each module follows the same layout (a folder only exists when it has content):

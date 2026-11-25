@@ -1,19 +1,67 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { MockLanguageModelV4 } from 'ai/test';
 
 type LanguageModelV4GenerateResult = Awaited<
   ReturnType<MockLanguageModelV4['doGenerate']>
 >;
 import { WikiService } from './wiki.service';
-import { FilesService } from '../../files';
+import { FilesService, WikiArea } from '../../files';
+import { FileRepository } from '../../files/infrastructure/file.repository';
+import {
+  LogRepository,
+  type NewLogEntry,
+} from '../infrastructure/log.repository';
 import {
   AiProvider,
   ConversationRepository,
   ModelService,
   type NewMessage,
 } from '../../llm';
+
+/** In-memory stand-in for the database-backed FileRepository. */
+class FakeFileRepository {
+  files = new Map<string, string>();
+  private key = (area: string, name: string) => `${area}/${name}`;
+
+  list(area: string) {
+    const prefix = `${area}/`;
+    return Promise.resolve(
+      [...this.files.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length))
+        .sort(),
+    );
+  }
+  find(area: string, name: string) {
+    return Promise.resolve(this.files.get(this.key(area, name)) ?? null);
+  }
+  create(area: string, name: string, content: string) {
+    if (this.files.has(this.key(area, name))) return Promise.resolve(false);
+    this.files.set(this.key(area, name), content);
+    return Promise.resolve(true);
+  }
+  async createMissing(
+    files: { area: string; name: string; content: string }[],
+  ) {
+    for (const f of files) await this.create(f.area, f.name, f.content);
+  }
+  update(area: string, name: string, content: string) {
+    if (!this.files.has(this.key(area, name))) return Promise.resolve(false);
+    this.files.set(this.key(area, name), content);
+    return Promise.resolve(true);
+  }
+  delete(area: string, name: string) {
+    return Promise.resolve(this.files.delete(this.key(area, name)));
+  }
+}
+
+/** In-memory stand-in for the database-backed LogRepository. */
+class FakeLogRepository {
+  entries: NewLogEntry[] = [];
+  add(entry: NewLogEntry) {
+    this.entries.push(entry);
+    return Promise.resolve();
+  }
+}
 
 /** In-memory stand-in for the database-backed ConversationRepository. */
 class FakeConversationRepository {
@@ -73,8 +121,8 @@ const finalText = (text: string): LanguageModelV4GenerateResult => ({
 });
 
 describe('WikiService', () => {
-  let dir: string;
   let filesService: FilesService;
+  let logs: FakeLogRepository;
   let conversations: FakeConversationRepository;
   let languageModel: MockLanguageModelV4;
 
@@ -87,14 +135,16 @@ describe('WikiService', () => {
       filesService,
       modelService,
       conversations as unknown as ConversationRepository,
+      logs as unknown as LogRepository,
     );
   };
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'wiki-'));
-    process.env.FILES_DIR = dir;
     conversations = new FakeConversationRepository();
-    filesService = new FilesService();
+    logs = new FakeLogRepository();
+    filesService = new FilesService(
+      new FakeFileRepository() as unknown as FileRepository,
+    );
     await filesService.onModuleInit();
     await filesService.addRaw(
       'source.md',
@@ -102,7 +152,8 @@ describe('WikiService', () => {
     );
   });
 
-  afterEach(() => rm(dir, { recursive: true, force: true }));
+  const read = async (area: WikiArea, name: string) =>
+    (await filesService.findOne(area, name)).content;
 
   it('ingest: écrit les pages demandées par l’IA et journalise', async () => {
     const service = serviceWith([
@@ -124,17 +175,20 @@ describe('WikiService', () => {
     expect(result.pagesCreated).toEqual(['modele-osi.md']);
     expect(result.pagesUpdated).toEqual(['index.md']);
     expect(result.summary).toBe('Page modele-osi créée.');
-    expect(await readFile(join(dir, 'wiki', 'modele-osi.md'), 'utf8')).toBe(
-      '# Modèle OSI',
-    );
-    const log = await readFile(join(dir, 'wiki', 'log.md'), 'utf8');
-    expect(log).toContain('ingest | source.md');
-    expect(log).toContain('pages créées : modele-osi.md');
+    expect(await read(WikiArea.WIKI, 'modele-osi.md')).toBe('# Modèle OSI');
+    expect(logs.entries).toEqual([
+      {
+        operation: 'ingest',
+        subject: 'source.md',
+        pagesCreated: ['modele-osi.md'],
+        pagesUpdated: ['index.md'],
+        status: 'success',
+      },
+    ]);
   });
 
-  it('ingest: refuse les écritures dans log.md ou avec un nom invalide', async () => {
+  it('ingest: refuse les noms de page invalides', async () => {
     const service = serviceWith([
-      toolCall('write_page', { name: 'log.md', content: 'pirate' }),
       toolCall('write_page', { name: '../raw/source.md', content: 'pirate' }),
       finalText('fini'),
     ]);
@@ -145,12 +199,71 @@ describe('WikiService', () => {
     });
 
     expect(result.pagesCreated).toEqual([]);
-    expect(await readFile(join(dir, 'raw', 'source.md'), 'utf8')).toContain(
-      '7 couches',
+    expect(await read(WikiArea.RAW, 'source.md')).toContain('7 couches');
+  });
+
+  it('ingest: journalise l’échec avec les pages déjà écrites', async () => {
+    const service = serviceWith([
+      toolCall('write_page', { name: 'modele-osi.md', content: '# OSI' }),
+    ]);
+    // The provider fails on the second round trip, after one page was written.
+    const firstCall = languageModel.doGenerate.bind(languageModel);
+    let calls = 0;
+    languageModel.doGenerate = (options) =>
+      ++calls === 1
+        ? firstCall(options)
+        : Promise.reject(new Error('quota exceeded'));
+
+    await expect(
+      service.ingest('source.md', {
+        provider: AiProvider.ANTHROPIC,
+        model: 'mock',
+      }),
+    ).rejects.toThrow('quota exceeded');
+    expect(logs.entries).toEqual([
+      {
+        operation: 'ingest',
+        subject: 'source.md',
+        pagesCreated: ['modele-osi.md'],
+        pagesUpdated: [],
+        status: 'failed',
+        error: 'ANTHROPIC request failed: quota exceeded',
+      },
+    ]);
+  });
+
+  it('ingest: plusieurs sources lancées en même temps passent l’une après l’autre', async () => {
+    await filesService.addRaw(
+      'source-b.md',
+      Buffer.from('# TCP/IP a 4 couches.'),
     );
-    expect(await readFile(join(dir, 'wiki', 'log.md'), 'utf8')).not.toContain(
-      'pirate',
-    );
+    const service = serviceWith([]);
+    const events: string[] = [];
+    languageModel.doGenerate = async (options) => {
+      const source = JSON.stringify(options.prompt).includes('source-b.md')
+        ? 'B'
+        : 'A';
+      events.push(`start ${source}`);
+      // A is slow: without the queue, B would start before A ends.
+      await new Promise((resolve) =>
+        setTimeout(resolve, source === 'A' ? 30 : 0),
+      );
+      events.push(`end ${source}`);
+      return finalText(`done ${source}`);
+    };
+
+    const opts = { provider: AiProvider.ANTHROPIC, model: 'mock' };
+    const [a, b] = await Promise.all([
+      service.ingest('source.md', opts),
+      service.ingest('source-b.md', opts),
+    ]);
+
+    expect(events).toEqual(['start A', 'end A', 'start B', 'end B']);
+    expect([a.summary, b.summary]).toEqual(['done A', 'done B']);
+    expect(logs.entries.map((e) => [e.subject, e.status])).toEqual([
+      ['source.md', 'success'],
+      ['source-b.md', 'success'],
+    ]);
   });
 
   it('query: répond et liste les pages consultées', async () => {
@@ -171,6 +284,16 @@ describe('WikiService', () => {
 
     expect(result.answer).toContain('7 couches');
     expect(result.sources.pages).toEqual(['modele-osi.md']);
+    expect(logs.entries).toEqual([
+      {
+        operation: 'query',
+        subject: 'Combien de couches ?',
+        pagesRead: ['modele-osi.md'],
+        pagesCreated: [],
+        pagesUpdated: [],
+        status: 'success',
+      },
+    ]);
 
     // A new conversation holds the question and the answer.
     const conversation = conversations.conversations.get(result.conversationId);
@@ -183,6 +306,42 @@ describe('WikiService', () => {
       providerName: AiProvider.ANTHROPIC,
       model: 'mock',
       source: { pages: ['modele-osi.md'], raw: [] },
+    });
+  });
+
+  it('query: écrit une page quand le professeur le demande, et le journalise', async () => {
+    await filesService.writeWikiPage(
+      'modele-osi.md',
+      '# Modèle OSI\n7 couches.',
+    );
+    const service = serviceWith([
+      toolCall('read_page', { name: 'modele-osi.md' }),
+      toolCall('write_page', {
+        name: 'osi-summary.md',
+        content: '# OSI summary\n7 layers.',
+      }),
+      finalText('Created osi-summary.md.'),
+    ]);
+
+    const result = await service.query({
+      provider: AiProvider.ANTHROPIC,
+      model: 'mock',
+      question: 'Save your previous answer to the wiki.',
+    });
+
+    expect(await read(WikiArea.WIKI, 'osi-summary.md')).toBe(
+      '# OSI summary\n7 layers.',
+    );
+    expect(result.sources).toEqual({
+      pages: ['modele-osi.md'],
+      raw: [],
+      created: ['osi-summary.md'],
+      updated: [],
+    });
+    expect(logs.entries[0]).toMatchObject({
+      operation: 'query',
+      pagesCreated: ['osi-summary.md'],
+      status: 'success',
     });
   });
 

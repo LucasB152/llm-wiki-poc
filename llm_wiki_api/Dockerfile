@@ -12,13 +12,12 @@ RUN pnpm exec prisma generate --config prisma7.config.ts && pnpm run build
 # ---- Runtime ----
 FROM node:24-bookworm-slim
 WORKDIR /app
-# curl: used by the healthcheck and by the seed script.
+# curl: used by the healthcheck.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl \
   && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
-    FILES_DIR=/app/data \
     PORT=3000
 
 # node_modules is kept whole: the Prisma CLI (a dev dependency) is needed
@@ -27,11 +26,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json prisma7.config.ts ./
 COPY prisma ./prisma
-# Wiki schema and sample sources. data/wiki/ is NOT copied (see .dockerignore):
-# the pages are generated inside the container and are not kept in a volume.
-COPY data ./data
-COPY docker/entrypoint.sh docker/seed.sh ./docker/
-RUN chmod +x docker/*.sh
+COPY docker/entrypoint.sh ./docker/
+RUN chmod +x docker/entrypoint.sh
 
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=10 \

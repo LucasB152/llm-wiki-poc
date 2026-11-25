@@ -1,6 +1,7 @@
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
-import { FilesService, LOG_FILE, WikiArea } from '../../files';
+import { FilesService, WikiArea } from '../../files';
+import { LIMITS } from '../domain/limits';
 
 /** What the AI read / wrote during a run, reported in the response. */
 export interface WikiActivity {
@@ -36,15 +37,14 @@ async function safely<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
 function readTools(filesService: FilesService, activity: WikiActivity) {
   return {
     list_pages: tool({
-      description:
-        'Liste les noms de toutes les pages du wiki (dossier wiki/).',
+      description: 'Lists the names of all the wiki pages (wiki/ folder).',
       inputSchema: z.object({}),
       execute: () => safely(() => filesService.findAll(WikiArea.WIKI)),
     }),
     read_page: tool({
-      description: "Lit le contenu markdown complet d'une page du wiki.",
+      description: 'Reads the full markdown content of a wiki page.',
       inputSchema: z.object({
-        name: z.string().describe('Nom du fichier, ex. "couche-reseau.md"'),
+        name: z.string().describe('File name, e.g. "network-layer.md"'),
       }),
       execute: ({ name }) =>
         safely(async () => {
@@ -54,29 +54,79 @@ function readTools(filesService: FilesService, activity: WikiActivity) {
         }),
     }),
     list_sources: tool({
-      description: 'Liste les noms des sources brutes (dossier raw/).',
+      description: 'Lists the names of the raw sources (raw/ folder).',
       inputSchema: z.object({}),
       execute: () => safely(() => filesService.findAll(WikiArea.RAW)),
     }),
     read_source: tool({
-      description: 'Lit une source brute de raw/ (lecture seule).',
+      description: 'Reads a raw source from raw/ (read-only).',
       inputSchema: z.object({ name: z.string() }),
       execute: ({ name }) =>
         safely(async () => {
           const { content } = await filesService.findOne(WikiArea.RAW, name);
           activity.sourcesRead.add(name);
-          return { name, content };
+          // A huge source would fill the context of every following step.
+          return content.length > LIMITS.sourceChars
+            ? {
+                name,
+                content: content.slice(0, LIMITS.sourceChars),
+                truncated: true,
+              }
+            : { name, content };
         }),
     }),
   };
 }
 
-/** Tools for a query: read-only. */
+/** Writes a wiki page (never raw/ or AGENTS.md), with the name and size checks. */
+function writePageTool(filesService: FilesService, activity: WikiActivity) {
+  return tool({
+    description:
+      'Creates or fully replaces a wiki page (index.md included). ' +
+      'The given content replaces the whole file: to change an existing page, ' +
+      'read it first, then send back the complete updated version.',
+    inputSchema: z.object({
+      name: z
+        .string()
+        .describe(
+          'Lowercase and hyphens, .md extension, e.g. "network-layer.md"',
+        ),
+      content: z.string().describe('Full markdown content of the page'),
+    }),
+    execute: ({ name, content }) =>
+      safely(async () => {
+        if (!PAGE_NAME.test(name)) {
+          throw new Error(
+            `Invalid name "${name}": lowercase letters, digits and hyphens only, .md extension.`,
+          );
+        }
+        if (content.length > LIMITS.pageChars) {
+          throw new Error(
+            `Page too long (${content.length} characters, max ${LIMITS.pageChars}): ` +
+              'split it into several concept pages linked together.',
+          );
+        }
+        const { created } = await filesService.writeWikiPage(name, content);
+        if (created) activity.pagesCreated.add(name);
+        else if (!activity.pagesCreated.has(name))
+          activity.pagesUpdated.add(name);
+        return { name, status: created ? 'created' : 'updated' };
+      }),
+  });
+}
+
+/**
+ * Tools for the chat: read, plus write_page, which the prompt only allows when
+ * the teacher explicitly asks for a change ("save this answer", "fix this page").
+ */
 export function createQueryTools(
   filesService: FilesService,
   activity: WikiActivity,
 ): ToolSet {
-  return readTools(filesService, activity);
+  return {
+    ...readTools(filesService, activity),
+    write_page: writePageTool(filesService, activity),
+  };
 }
 
 /** Tools for ingestion: read + write wiki pages. */
@@ -86,37 +136,6 @@ export function createIngestTools(
 ): ToolSet {
   return {
     ...readTools(filesService, activity),
-    write_page: tool({
-      description:
-        'Crée ou remplace entièrement une page du wiki (y compris index.md). ' +
-        'Le contenu fourni remplace tout le fichier : pour modifier une page existante, ' +
-        "lis-la d'abord puis renvoie la version complète mise à jour.",
-      inputSchema: z.object({
-        name: z
-          .string()
-          .describe(
-            'Minuscules et tirets, extension .md, ex. "couche-reseau.md"',
-          ),
-        content: z.string().describe('Contenu markdown complet de la page'),
-      }),
-      execute: ({ name, content }) =>
-        safely(async () => {
-          if (name === LOG_FILE) {
-            throw new Error(
-              `${LOG_FILE} est géré automatiquement, ne l'écris pas.`,
-            );
-          }
-          if (!PAGE_NAME.test(name)) {
-            throw new Error(
-              `Nom invalide "${name}" : minuscules, chiffres et tirets uniquement, extension .md.`,
-            );
-          }
-          const { created } = await filesService.writeWikiPage(name, content);
-          if (created) activity.pagesCreated.add(name);
-          else if (!activity.pagesCreated.has(name))
-            activity.pagesUpdated.add(name);
-          return { name, status: created ? 'created' : 'updated' };
-        }),
-    }),
+    write_page: writePageTool(filesService, activity),
   };
 }

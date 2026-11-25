@@ -1,6 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { Test } from '@nestjs/testing';
@@ -29,17 +27,14 @@ function loadDotEnv() {
 }
 
 /**
- * API tests of the public app, on a temporary wiki folder.
+ * API tests of the public app, on the database of the .env.
  * No AI provider is called: only routes that do not need a valid key.
  */
 describe('Public app (e2e)', () => {
   let app: INestApplication<App>;
-  let filesDir: string;
 
   beforeAll(async () => {
     loadDotEnv();
-    filesDir = await mkdtemp(join(tmpdir(), 'wiki-e2e-'));
-    process.env.FILES_DIR = filesDir;
 
     const moduleRef = await Test.createTestingModule({
       imports: [PublicAppModule],
@@ -59,16 +54,29 @@ describe('Public app (e2e)', () => {
 
   afterAll(async () => {
     await app.close();
-    await rm(filesDir, { recursive: true, force: true });
+    await deleteTestSource();
   });
 
-  it('creates the default wiki pages on startup', () =>
-    request(app.getHttpServer())
+  /** The source created by these tests (the database is shared with dev). */
+  const deleteTestSource = () =>
+    app
+      .get(PrismaService)
+      .wikiFile.deleteMany({ where: { area: 'raw', name: 'osi.md' } });
+
+  it('creates the default wiki pages on startup', async () => {
+    const res = await request(app.getHttpServer())
       .get('/files/wiki')
-      .expect(200)
-      .expect(['index.md', 'log.md']));
+      .expect(200);
+    expect(res.body).toContain('index.md');
+  });
+
+  it('serves the wiki log as a list', async () => {
+    const res = await request(app.getHttpServer()).get('/wiki/log').expect(200);
+    expect(Array.isArray(res.body)).toBe(true);
+  });
 
   it('uploads a raw source, then refuses to overwrite it', async () => {
+    await deleteTestSource();
     const upload = () =>
       request(app.getHttpServer())
         .post('/files/raw/upload')
@@ -80,6 +88,34 @@ describe('Public app (e2e)', () => {
       .get('/files/raw/osi.md')
       .expect(200)
       .expect({ area: 'raw', name: 'osi.md', content: '# OSI model' });
+  });
+
+  it('lists the new source as not ingested', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/wiki/sources')
+      .expect(200);
+    expect(res.body).toContainEqual(
+      expect.objectContaining({
+        name: 'osi.md',
+        status: 'not_ingested',
+        lastIngestedAt: null,
+      }),
+    );
+  });
+
+  it('edits an existing raw source, but does not create one', async () => {
+    await request(app.getHttpServer())
+      .put('/files/raw/osi.md')
+      .send({ content: '# OSI model, edited' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/files/raw/osi.md')
+      .expect(200)
+      .expect({ area: 'raw', name: 'osi.md', content: '# OSI model, edited' });
+    await request(app.getHttpServer())
+      .put('/files/raw/missing.md')
+      .send({ content: 'x' })
+      .expect(404);
   });
 
   /** Keys stored in the database (they survive restarts, so may exist). */
@@ -125,13 +161,10 @@ describe('Public app (e2e)', () => {
 
     it('returns 400 for an id that is not a UUID', () =>
       request(app.getHttpServer())
-        .get('/wiki/conversations/not-a-uuid')
+        .get('/wiki/conversations/not-a-uuid/messages')
         .expect(400));
 
     it('returns 404 for an unknown conversation', async () => {
-      await request(app.getHttpServer())
-        .get(`/wiki/conversations/${unknownId}`)
-        .expect(404);
       await request(app.getHttpServer())
         .delete(`/wiki/conversations/${unknownId}`)
         .expect(404);

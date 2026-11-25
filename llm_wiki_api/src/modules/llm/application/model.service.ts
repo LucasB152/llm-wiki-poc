@@ -3,6 +3,7 @@ import { type LanguageModel } from 'ai';
 import { createGoogle } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGroq } from '@ai-sdk/groq';
 import { AiProvider } from '../domain/ai-provider.enum';
 import { ApiKeyService } from './api-key.service';
 import { fetchProviderModels } from '../infrastructure/provider-api';
@@ -40,6 +41,8 @@ export class ModelService {
         return createOpenAI({ apiKey })(modelId);
       case AiProvider.ANTHROPIC:
         return createAnthropic({ apiKey })(modelId);
+      case AiProvider.GROQ:
+        return createGroq({ apiKey })(modelId);
     }
   }
 }

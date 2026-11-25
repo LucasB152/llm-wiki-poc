@@ -21,7 +21,7 @@ export class WikiController {
 
   /**
    * Ingests a source already uploaded to raw/ (via POST /files/raw/upload):
-   * the AI creates / updates the wiki pages, the index and the log.
+   * the AI creates / updates the wiki pages and the index; the operation is logged.
    */
   @Post('ingest/:name')
   ingest(@Param('name') name: string, @Body() dto: IngestSourceDto) {
@@ -37,16 +37,22 @@ export class WikiController {
     return this.wikiService.query(dto);
   }
 
+  /** Raw sources with their ingestion status (not_ingested, ingested, failed, outdated). */
+  @Get('sources')
+  sources() {
+    return this.wikiService.sources();
+  }
+
+  /** Wiki journal: every ingestion and question, most recent first. */
+  @Get('log')
+  log() {
+    return this.wikiService.log();
+  }
+
   /** Lists the conversations, most recently active first. */
   @Get('conversations')
   findConversations() {
     return this.wikiService.findConversations();
-  }
-
-  /** Returns a conversation with all its messages. */
-  @Get('conversations/:id')
-  findConversation(@Param('id', ParseUUIDPipe) id: string) {
-    return this.wikiService.findConversation(id);
   }
 
   /** Returns the messages of a conversation, oldest first. */

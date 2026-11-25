@@ -1,0 +1,78 @@
+<header class="max-w-3xl">
+  <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">API Keys</h1>
+  <p class="mt-1 text-zinc-500">
+    Add a key for the providers you want to use.
+  </p>
+</header>
+
+@if (loadError(); as error) {
+  <div role="alert" class="mt-6 flex flex-col gap-3 rounded-2xl border border-red-200 bg-red-50 p-5 text-red-800 sm:flex-row sm:items-center sm:justify-between">
+    <p>{{ error }}</p>
+    <button type="button" (click)="load()" class="rounded-lg bg-white px-4 py-2 text-sm font-medium ring-1 ring-red-200 hover:bg-red-100">Retry</button>
+  </div>
+}
+
+<!-- One horizontal row that scrolls: the cards keep the size of a 3-column grid. -->
+<section
+  class="-mx-4 mt-12 flex snap-x lg:mt-20 snap-mandatory gap-6 overflow-x-auto px-4 pb-4 sm:-mx-8 sm:px-8"
+  aria-label="AI providers"
+>
+  @for (p of providers; track p.id) {
+    @let key = stored()[p.id];
+    @let isBusy = busy()[p.id];
+    <article class="flex w-[85%] shrink-0 snap-start flex-col rounded-2xl border border-zinc-200 p-6 sm:w-[calc((100%-1.5rem)/2)] sm:p-8 lg:w-[calc((100%-3rem)/3)] 2xl:w-[calc((100%-4.5rem)/4)]">
+      <div class="flex items-center gap-4">
+        <div class="flex size-12 shrink-0 items-center justify-center rounded-xl bg-zinc-50 ring-1 ring-zinc-200">
+          <img [src]="p.logo" [alt]="p.vendor + ' logo'" class="size-7" />
+        </div>
+        <div class="min-w-0">
+          <h2 class="text-lg font-medium">{{ p.name }}</h2>
+          <p class="text-sm text-zinc-500">{{ p.vendor }}</p>
+        </div>
+        @if (!loading()) {
+          <span
+            class="ml-auto shrink-0 rounded-full px-2.5 py-1 text-xs font-medium"
+            [class]="key ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500'"
+          >{{ key ? 'Connected' : 'Not set' }}</span>
+        }
+      </div>
+
+      <div class="mt-6 flex flex-1 flex-col gap-3">
+        @if (key) {
+          <div class="flex items-center justify-between gap-3 rounded-lg bg-zinc-50 px-4 py-3">
+            <code class="truncate text-sm text-zinc-700">{{ key }}</code>
+            <button
+              type="button"
+              (click)="remove(p.id)"
+              [disabled]="isBusy"
+              class="shrink-0 text-sm font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+            >Remove</button>
+          </div>
+        }
+
+        <form class="mt-auto flex flex-col gap-3" (submit)="$event.preventDefault(); save(p.id)">
+          <label class="sr-only" [for]="'key-' + p.id">{{ p.name }} API key</label>
+          <input
+            [id]="'key-' + p.id"
+            type="password"
+            autocomplete="off"
+            [placeholder]="key ? 'Paste a new key to replace it' : p.placeholder"
+            [value]="drafts()[p.id] ?? ''"
+            (input)="setDraft(p.id, $any($event.target).value)"
+            [disabled]="isBusy"
+            class="w-full rounded-lg border border-zinc-300 px-4 py-2.5 text-base outline-none transition placeholder:text-zinc-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-zinc-50"
+          />
+          <button
+            type="submit"
+            [disabled]="isBusy || !drafts()[p.id]?.trim()"
+            class="rounded-lg bg-zinc-900 px-4 py-2.5 font-medium text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >{{ isBusy ? 'Verifying…' : key ? 'Replace key' : 'Save key' }}</button>
+        </form>
+
+        @if (errors()[p.id]; as error) {
+          <p role="alert" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</p>
+        }
+      </div>
+    </article>
+  }
+</section>

@@ -1,24 +1,15 @@
-# Nestjs specific
-/dist
-/node_modules
-/build
-/tmp
+# Root of the monorepo: each app (llm_wiki_api, llm_wiki_webui) has its own .gitignore.
 
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# dotenv environment variable files
+# Secrets: copy .env.example to .env
 .env
-.env.development
-.env.test
-.env.production
+.env.*
+!.env.example
 
-# temp directory
-.temp
-.tmp
+# Local tool settings
+.claude/settings.local.json
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -33,12 +33,7 @@ export class FilesController {
     return this.filesService.writeSchema(content);
   }
 
-  // ---- raw/: raw sources, immutable (no updates) --------------------------
-
-  @Get('raw')
-  listRaw() {
-    return this.filesService.findAll(WikiArea.RAW);
-  }
+  // ---- raw/: raw sources (the AI never modifies them, the user can) --------
 
   @Get('raw/:name')
   readRaw(@Param('name') name: string) {
@@ -63,12 +58,19 @@ export class FilesController {
     return this.filesService.addRaw(name ?? file.originalname, file.buffer);
   }
 
+  /** Edits an existing source (JSON: `{ "content": "..." }`); new sources go through upload. */
+  @Put('raw/:name')
+  updateRaw(@Param('name') name: string, @Body() { content }: UpdateFileDto) {
+    return this.filesService.updateRaw(name, content);
+  }
+
   @Delete('raw/:name')
   removeRaw(@Param('name') name: string) {
     return this.filesService.remove(WikiArea.RAW, name);
   }
 
-  // ---- wiki/: pages maintained by the LLM ---------------------------------
+  // ---- wiki/: pages maintained by the LLM, read-only through the API -------
+  // The AI writes pages with its write_page tool (FilesService.writeWikiPage).
 
   @Get('wiki')
   listWiki() {
@@ -78,16 +80,5 @@ export class FilesController {
   @Get('wiki/:name')
   readWiki(@Param('name') name: string) {
     return this.filesService.findOne(WikiArea.WIKI, name);
-  }
-
-  /** Creates or replaces a wiki page (JSON: `{ "content": "..." }`). */
-  @Put('wiki/:name')
-  writeWiki(@Param('name') name: string, @Body() { content }: UpdateFileDto) {
-    return this.filesService.writeWikiPage(name, content);
-  }
-
-  @Delete('wiki/:name')
-  removeWiki(@Param('name') name: string) {
-    return this.filesService.remove(WikiArea.WIKI, name);
   }
 }

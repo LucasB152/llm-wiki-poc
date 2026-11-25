@@ -34,6 +34,11 @@ function modelsRequest(
         url: 'https://api.anthropic.com/v1/models?limit=1000',
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       };
+    case AiProvider.GROQ:
+      return {
+        url: 'https://api.groq.com/openai/v1/models',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      };
   }
 }
 

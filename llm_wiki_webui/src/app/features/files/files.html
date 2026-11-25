@@ -1,0 +1,166 @@
+<header class="max-w-3xl">
+  <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Files</h1>
+  <p class="mt-1 text-zinc-500">Your sources, the pages the AI wrote, the instructions it follows, and its log.</p>
+</header>
+
+<div role="tablist" class="mt-5 inline-flex self-start max-w-full overflow-x-auto rounded-xl bg-zinc-100 p-1">
+  @for (t of tabs; track t.id) {
+    <button
+      type="button"
+      role="tab"
+      [attr.aria-selected]="tab() === t.id"
+      (click)="selectTab(t.id)"
+      class="shrink-0 rounded-lg px-4 py-2 text-sm font-medium whitespace-nowrap transition sm:text-base"
+      [class]="tab() === t.id ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900'"
+    >{{ t.label }}</button>
+  }
+</div>
+
+@if (error(); as e) {
+  <div role="alert" class="mt-4 flex shrink-0 items-start justify-between gap-4 rounded-xl bg-red-50 px-5 py-3 text-red-800">
+    <p>{{ e }}</p>
+    <button type="button" (click)="error.set(null)" aria-label="Dismiss" class="text-red-400 hover:text-red-700">✕</button>
+  </div>
+}
+
+@if (tab() === 'log') {
+  <div class="mt-4 min-h-0 flex-1 overflow-y-auto"><app-log /></div>
+} @else {
+<div class="mt-4 grid min-h-0 flex-1 gap-4 md:grid-rows-[minmax(0,1fr)]" [class]="tab() !== 'schema' ? 'md:grid-cols-[14rem_1fr] lg:grid-cols-[18rem_1fr] 2xl:grid-cols-[22rem_1fr]' : ''">
+  @if (tab() !== 'schema') {
+    <aside class="flex min-h-0 flex-col rounded-2xl border border-zinc-200">
+      @if (tab() === 'raw') {
+        <div class="border-b border-zinc-200 p-3">
+          <label
+            class="flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-zinc-900 px-4 py-2.5 font-medium text-white transition hover:bg-zinc-700"
+            [class.opacity-40]="busy()"
+          >
+            <span aria-hidden="true">↑</span> Upload source
+            <input #picker type="file" accept=".md,.txt,text/markdown,text/plain" class="sr-only" [disabled]="busy()" (change)="upload(picker)" />
+          </label>
+        </div>
+      }
+      <ul class="max-h-60 overflow-y-auto p-2 md:max-h-none md:flex-1">
+        @for (name of files(); track name) {
+          @let status = statuses()[name];
+          <li>
+            <button
+              type="button"
+              (click)="open(name)"
+              class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition"
+              [class]="selected() === name ? 'bg-indigo-50 font-medium text-indigo-700' : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900'"
+            >
+              @if (tab() === 'raw' && status) {
+                <span class="size-2 shrink-0 rounded-full" [class]="statusLabels[status].dot" [title]="statusLabels[status].label"></span>
+                <span class="sr-only">{{ statusLabels[status].label }}:</span>
+              }
+              <span class="truncate">{{ name }}</span>
+              @if (ingestState(name); as state) {
+                <span class="ml-auto shrink-0 text-xs text-indigo-500">{{ state }}</span>
+              }
+            </button>
+          </li>
+        } @empty {
+          <li class="px-3 py-6 text-center text-sm text-zinc-400">No files yet.</li>
+        }
+      </ul>
+    </aside>
+  }
+
+  <section class="flex min-h-[20rem] min-w-0 flex-col rounded-2xl border border-zinc-200 md:min-h-0">
+    @if (selected()) {
+      <div class="flex flex-wrap items-center gap-3 border-b border-zinc-200 px-5 py-3">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
+          <h2 class="truncate font-mono text-sm font-medium">{{ selected() }}</h2>
+          @if (tab() === 'raw' && statuses()[selected()!]; as status) {
+            <span class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium" [class]="statusLabels[status].badge">{{ statusLabels[status].label }}</span>
+          }
+        </div>
+
+        <div class="flex items-center gap-2 text-sm">
+          @if (draft() !== null) {
+            <button type="button" (click)="cancel()" [disabled]="busy()" class="rounded-lg px-3 py-1.5 font-medium text-zinc-600 hover:bg-zinc-100">Cancel</button>
+            <button
+              type="button"
+              (click)="save()"
+              [disabled]="busy()"
+              class="rounded-lg bg-zinc-900 px-3 py-1.5 font-medium text-white hover:bg-zinc-700 disabled:opacity-40"
+            >{{ busy() ? 'Saving…' : 'Save' }}</button>
+          } @else if (tab() === 'wiki') {
+            <span class="text-zinc-400">Written by the AI</span>
+          } @else {
+            @if (tab() === 'raw') {
+              @let action = ingestAction(statuses()[selected()!]);
+              @let state = ingestState(selected()!);
+              <button
+                type="button"
+                (click)="ingestOpen.set(!ingestOpen())"
+                [disabled]="state !== null"
+                class="rounded-lg px-3 py-1.5 font-medium transition disabled:opacity-40"
+                [class]="action.primary ? 'bg-indigo-600 text-white hover:bg-indigo-500' : 'text-zinc-600 ring-1 ring-zinc-200 hover:bg-zinc-50'"
+              >{{ state ?? action.label }}</button>
+            }
+            <button type="button" (click)="edit()" class="rounded-lg px-3 py-1.5 font-medium text-zinc-600 ring-1 ring-zinc-200 hover:bg-zinc-50">Edit</button>
+            @if (tab() === 'raw') {
+              <button type="button" (click)="remove()" [disabled]="busy()" class="rounded-lg px-3 py-1.5 font-medium text-red-600 hover:bg-red-50 disabled:opacity-40">Delete</button>
+            }
+          }
+        </div>
+      </div>
+
+      @if (ingestOpen() && draft() === null) {
+        <div class="space-y-4 border-b border-zinc-200 bg-zinc-50/60 px-5 py-4">
+          <p class="text-sm text-zinc-600">
+            The AI reads this source and creates or updates the wiki pages. Choose the model to use.
+            @if (ingesting().length) {
+              <span class="text-zinc-500">It will start after the {{ ingesting().length }} ingestion{{ ingesting().length === 1 ? '' : 's' }} already in progress.</span>
+            }
+          </p>
+          <app-model-picker [(selection)]="ingestWith" />
+          <div class="flex items-center justify-end gap-2 text-sm">
+            <button
+              type="button"
+              (click)="ingestOpen.set(false)"
+              class="rounded-lg px-3 py-1.5 font-medium text-zinc-600 ring-1 ring-zinc-200 transition hover:bg-zinc-50"
+            >Cancel</button>
+            <button
+              type="button"
+              (click)="ingest()"
+              [disabled]="!ingestWith()"
+              [title]="ingestWith() ? '' : 'Choose a model first'"
+              class="rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-indigo-200"
+            >Start ingestion</button>
+          </div>
+        </div>
+      }
+
+      @if (results()[selected()!]; as r) {
+        <div role="status" class="border-b border-emerald-100 bg-emerald-50 px-5 py-4 text-sm text-emerald-800">
+          <p class="font-medium">
+            Ingested: {{ r.pagesCreated.length }} page{{ r.pagesCreated.length === 1 ? '' : 's' }} created,
+            {{ r.pagesUpdated.length }} updated.
+          </p>
+          <p class="mt-1 text-emerald-700">{{ r.summary }}</p>
+        </div>
+      }
+
+      @if (draft() !== null) {
+        <label class="sr-only" for="editor">Content</label>
+        <textarea
+          id="editor"
+          [value]="draft()"
+          (input)="draft.set($any($event.target).value)"
+          spellcheck="false"
+          class="min-h-[16rem] flex-1 resize-none rounded-b-2xl p-5 font-mono md:min-h-0 text-sm leading-relaxed outline-none"
+        ></textarea>
+      } @else {
+        <pre class="min-h-0 flex-1 overflow-auto p-5 font-mono text-sm leading-relaxed whitespace-pre-wrap text-zinc-700">{{ content() }}</pre>
+      }
+    } @else {
+      <div class="flex flex-1 items-center justify-center p-10 text-center text-zinc-400">
+        {{ busy() ? 'Loading…' : 'Select a file to view it.' }}
+      </div>
+    }
+  </section>
+</div>
+}

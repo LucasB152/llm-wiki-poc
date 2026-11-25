@@ -1,0 +1,42 @@
+<!-- Exactly one screen high: pages never scroll, only their inner panels do. -->
+<div class="flex h-dvh flex-col overflow-hidden bg-white text-zinc-900 antialiased">
+  <header class="shrink-0 border-b border-zinc-200/70 bg-white">
+    <nav class="mx-auto flex h-16 max-w-7xl 2xl:max-w-[96rem] items-center justify-between px-4 sm:px-8">
+      <a routerLink="/" class="flex items-center gap-2 text-lg font-semibold tracking-tight">
+        <span class="size-3 rounded-full bg-indigo-500"></span>
+        LLM Wiki
+      </a>
+      <div class="flex items-center gap-0.5 text-sm sm:gap-2 sm:text-base">
+        @for (link of links; track link.path) {
+          <a
+            [routerLink]="link.path"
+            routerLinkActive="bg-zinc-100 text-zinc-900"
+            class="rounded-md px-2.5 py-2 text-zinc-500 sm:px-4 transition-colors hover:text-zinc-900"
+          >{{ link.label }}</a>
+        }
+      </div>
+    </nav>
+  </header>
+
+  <!-- overflow-y-auto: last resort on very small screens only. -->
+  <main class="min-h-0 flex-1 overflow-y-auto">
+    <div class="mx-auto flex h-full w-full max-w-7xl 2xl:max-w-[96rem] flex-col px-4 py-6 sm:px-8">
+      <router-outlet />
+    </div>
+  </main>
+
+  <footer class="shrink-0 border-t border-zinc-200/70">
+    <div class="mx-auto flex max-w-7xl 2xl:max-w-[96rem] flex-wrap items-center justify-between gap-x-6 gap-y-1 px-4 py-3 text-xs text-zinc-400 sm:px-8">
+      <p>© {{ year }} Lucas Bauduin. All rights reserved.</p>
+      <p>
+        Personal proof of concept, inspired by
+        <a
+          href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-zinc-500 underline decoration-zinc-300 underline-offset-4 hover:text-zinc-900"
+        >Karpathy's LLM Wiki</a>.
+      </p>
+    </div>
+  </footer>
+</div>

@@ -28,6 +28,14 @@ interface AnthropicModel {
   display_name?: string;
 }
 
+interface GroqModel {
+  id: string;
+  active?: boolean;
+}
+
+/** Groq models that cannot chat: speech-to-text, text-to-speech, moderation. */
+const NON_CHAT_GROQ_MODEL = /whisper|tts|orpheus|guard/i;
+
 @Controller('llm')
 export class LlmController {
   constructor(
@@ -46,13 +54,6 @@ export class LlmController {
   @Get('api-key')
   findAllApiKeys() {
     return this.apiKeyService.findAll();
-  }
-
-  @Get('api-key/:provider')
-  findApiKey(
-    @Param('provider', new ParseEnumPipe(AiProvider)) provider: AiProvider,
-  ) {
-    return this.apiKeyService.findOne(provider);
   }
 
   @Delete('api-key/:provider')
@@ -101,6 +102,17 @@ export class LlmController {
       case AiProvider.ANTHROPIC: {
         const list = (raw as { data?: AnthropicModel[] }).data ?? [];
         return list.map((m) => ({ id: m.id, name: m.display_name ?? m.id }));
+      }
+      case AiProvider.GROQ: {
+        const list = (raw as { data?: GroqModel[] }).data ?? [];
+        return (
+          list
+            // The list also holds speech and moderation models: text chat models only.
+            .filter(
+              (m) => m.active !== false && !NON_CHAT_GROQ_MODEL.test(m.id),
+            )
+            .map((m) => ({ id: m.id, name: m.id }))
+        );
       }
     }
   }
